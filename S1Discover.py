@@ -2,6 +2,7 @@ __author__ = 'eraserking'
 
 import argparse
 import os
+import re
 import sys
 
 import requests
@@ -42,31 +43,23 @@ def main(args):
         thread_proxy['http'] = args.proxy
         thread_proxy['https'] = args.proxy
 
-    thread = args.thread
-    first_page = download_page(create_url(thread, 1), 'get', download_proxy=thread_proxy)
-
+    first_page = download_single_page(create_url(args.thread, 1), 'get', download_proxy=thread_proxy)
     max_last_page_num = int(get_last_page_num(first_page))
     print('Page number of the last page in this thread is {}\n'.format(max_last_page_num))
 
-    # If start page is not specified, go from page 1; otherwise the start page cannot be negative or exceed last page
     if not args.start_page:
         start_page = 1
-    elif args.start_page <= 0:
-        raise SyntaxError('Start page number cannot be less or equal to zero')
-    elif args.start_page > max_last_page_num:
-        raise SyntaxError('Start page number cannot exceed last page number')
-    else:
+    elif 0 < args.start_page <= max_last_page_num:
         start_page = args.start_page
+    else:
+        raise SyntaxError('Start page number must fall into range 1 ~ last page')
 
-    # If end page is not specified, go to page last; otherwise the end page cannot be negative or exceed last page
     if not args.end_page:
         end_page = max_last_page_num
-    elif args.end_page <= 0:
-        raise SyntaxError('End page number cannot be less or equal to zero')
-    elif args.end_page > max_last_page_num:
-        raise SyntaxError('End page number cannot exceed last page number')
-    else:
+    elif 0 < args.end_page <= max_last_page_num:
         end_page = args.end_page
+    else:
+        raise SyntaxError('End page number must fall into range 1 ~ last page')
 
     if start_page > end_page:
         raise SyntaxError('Start page number cannot be larger than last page number')
@@ -77,7 +70,7 @@ def main(args):
 
     for page_num in range(start_page, end_page + 1):
         print('Parsing page {}'.format(page_num))
-        current_page = download_page(create_url(thread, page_num), 'get', download_proxy=thread_proxy)
+        current_page = download_single_page(create_url(args.thread, page_num), 'get', download_proxy=thread_proxy)
         all_posts_in_current_page, img_src_in_current_page, a_href_in_current_page = get_post_list(current_page)
 
         all_posts[page_num] = all_posts_in_current_page
@@ -86,50 +79,41 @@ def main(args):
         if len(a_href_in_current_page) > 0:
             a_href[page_num] = a_href_in_current_page
 
-    all_posts_file = open('thread_{}_posts_{}_{}.txt'.format(thread, start_page, end_page), 'w', errors='replace',
-                          encoding='utf-8')
-    write_to_file(all_posts_file, all_posts, False)
-    all_posts_file.close()
-
-    img_file = open('thread_{}_images_{}_{}.txt'.format(thread, start_page, end_page), 'w', errors='replace',
-                    encoding='utf-8')
-    write_to_file(img_file, img_src, True)
-    img_file.close()
-
-    a_file = open('thread_{}_links_{}_{}.txt'.format(thread, start_page, end_page), 'w', errors='replace',
-                  encoding='utf-8')
-    write_to_file(a_file, a_href, True)
-    a_file.close()
+    write_to_file('thread_{}_posts_{}_{}.txt'.format(args.thread, start_page, end_page), all_posts, first_page.title.text, False)
+    write_to_file('thread_{}_images_{}_{}.txt'.format(args.thread, start_page, end_page), img_src, first_page.title.text, True)
+    write_to_file('thread_{}_links_{}_{}.txt'.format(args.thread, start_page, end_page), a_href, first_page.title.text, True)
 
     if args.download_image:
-        failed_images = download_img(thread, img_src, img_proxy, args.only_for_failed_image)
+        failed_images = download_images(args.thread, img_src, img_proxy, args.only_for_failed_image)
         if (len(failed_images) > 0):
-            a_file = open('thread_{}_img_failed_{}_{}.txt'.format(thread, start_page, end_page), 'w', errors='replace',
-                          encoding='utf-8')
-            a_file.writelines([x + '\n' for x in failed_images])
-            a_file.close()
+            write_to_file('thread_{}_img_failed_{}_{}.txt'.format(args.thread, start_page, end_page), failed_images, first_page.title.text, True)
 
 
-def write_to_file(file_handler, dictionary_to_write, include_post_num):
+def write_to_file(file_name, dictionary_to_write, title, separate_element_in_post):
+    file_handler = open(file_name, 'w', errors='replace', encoding='utf-8')
+    file_handler.write(title + '\n')
     for page_num in dictionary_to_write.keys():
-        file_handler.write('>>>>> PAGE {}\n'.format(page_num))
+        file_handler.write('\n>> PAGE {}\n'.format(page_num))
         for post_num in sorted(dictionary_to_write[page_num].keys()):
-            if include_post_num:
-                file_handler.write('>>> POST {}\n'.format(post_num))
-            file_handler.writelines(dictionary_to_write[page_num][post_num])
+            if separate_element_in_post:
+                file_handler.write('>>>> POST {}\n'.format(post_num))
+                file_handler.writelines([x + '\n' for x in dictionary_to_write[page_num][post_num]])
+            else:
+                file_handler.writelines(dictionary_to_write[page_num][post_num])
+    file_handler.close()
 
 
-def download_img(thread, dictionary_to_download, img_proxy, only_for_failed_image):
+def download_images(thread, dictionary_to_download, img_proxy, only_for_failed_image):
     if not os.path.exists(str(thread)):
         os.makedirs(str(thread))
 
-    failed_images = []
+    failed_images = {}
 
     for page_num in dictionary_to_download.keys():
         print('Download image(s) on page {}'.format(page_num))
         for post_num in sorted(dictionary_to_download[page_num].keys()):
             for img_seq in range(len(dictionary_to_download[page_num][post_num])):
-                url = dictionary_to_download[page_num][post_num][img_seq].strip()
+                url = dictionary_to_download[page_num][post_num][img_seq]
                 # Some images doesn't have extension in URL and it's assumed to be 'jpg'
                 file_extension = url[url.rfind('/') + 1:]
                 if file_extension.find('.') == -1:
@@ -146,50 +130,40 @@ def download_img(thread, dictionary_to_download, img_proxy, only_for_failed_imag
                 if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
                     continue
 
-                # If only_for_failed_image is set, 1st without proxy and 2nd with proxy if 1st fails
-                # If 2nd still fails, add to failed list
                 if only_for_failed_image:
-                    try:
-                        req = requests.get(url, proxies={}, timeout=10)
-                        if req.status_code == 200:
-                            f = open(file_path, 'wb')
-                            f.write(req.content)
-                            f.close()
-
-                    except Exception:
-                        try:
-                            req = requests.get(url, proxies=img_proxy, timeout=10)
-                            if req.status_code == 200:
-                                f = open(file_path, 'wb')
-                                f.write(req.content)
-                                f.close()
-
-                        except Exception:
-                            failed_images.append(url)
-
-                # Just try once with proxy (if any)
-                # If it fails, add to failed list
+                    final_success = download_single_image(url, file_path, {}) or download_single_image(url, file_path, img_proxy)
                 else:
-                    try:
-                        req = requests.get(url, proxies=img_proxy, timeout=10)
-                        if req.status_code == 200:
-                            f = open(file_path, 'wb')
-                            f.write(req.content)
-                            f.close()
+                    final_success = download_single_image(url, file_path, img_proxy)
 
-                    except Exception:
-                        failed_images.append(url)
+                if not final_success:
+                    if page_num not in failed_images:
+                        failed_images[page_num] = {}
+                    if post_num not in failed_images[page_num]:
+                        failed_images[page_num][post_num] = []
+                    failed_images[page_num][post_num].append(url)
 
     return failed_images
 
 
+def download_single_image(url, file_path, proxy):
+    try:
+        req = requests.get(url, proxies=proxy, timeout=10)
+        if req.status_code == 200:
+            f = open(file_path, 'wb')
+            f.write(req.content)
+            f.close()
+            return True
+        return False
+
+    except Exception:
+        return False
+
+
 def get_last_page_num(bs):
     try:
-        page_indicator = bs.select('div[class="pg"]')[0]  # Select page bar
-        last_page_node = page_indicator.select('a[class="last"]')[0]  # Select the link to the last page
-        return last_page_node.text.replace('... ', '')
-    # Note there may be no such last page link
-    except IndexError:
+        page_indicator = bs.find('div', class_='pg').find('a', class_='last')
+        return page_indicator.text.replace('... ', '')
+    except AttributeError:
         print('Cannot find the last page number.')
         sys.exit(1)
 
@@ -200,91 +174,49 @@ def get_post_list(bs):
     a_href = {}
 
     # Select the post area
-    post_area = bs.select('div[id="postlist"]')[0].select('table[class="plhin"]')
-    for i, single_child_post in enumerate(post_area):
-
+    for i, single_child_post in enumerate(bs.find('div', id='postlist').find_all('table', class_='plhin')):
         # For the first post in every page, remove the first style node to remove '.pcb{margin-right:0}'.
         if i == 0:
-            single_child_post.select('style')[0].decompose()
+            single_child_post.find('style').decompose()
 
         try:
-            author = 'UNKNOWN'
-            author_nodes = single_child_post.select('a[class="xw1"]')
-            if len(author_nodes) > 0:
-                author = author_nodes[0].text
-
-            date = 'UNKNOWN'
-            date_nodes = single_child_post.select('div[class="pti"]')
-            if len(date_nodes) > 0:
-                date_nodes = date_nodes[0].select('em')
-                if len(date_nodes) > 0:
-                    date = date_nodes[0].text
-
-            post_num = 1
-            location_nodes = single_child_post.select('td[class="plc"]')
-            if len(location_nodes) > 0:
-                location_nodes = location_nodes[0].select('em')
-                # For the first post, it's special - no text but an 'id' for this 'em' found
-                # Just leave the default 1 and that's enough
-                if len(location_nodes) > 0 and 'id' not in location_nodes[0].attrs:
-                    post_num = int(location_nodes[0].text)
-
+            author = single_child_post.find('a', class_='xw1').text
+            date = single_child_post.find('div', class_='pti').find('em').text
+            post_num = int(single_child_post.find('a', id=re.compile('postnum\d+')).text.replace('#', '').replace('楼主', '1'))
             post_title = '\n[#{}] {} {}\n'.format(post_num, author, date)
 
             content = ''
-            content_nodes = single_child_post.select('div[class="pct"]')
-            if len(content_nodes) > 0:
-                content_node = content_nodes[0]
+            content_node = single_child_post.find('div', class_='pct')
+            # Show all quotes and then remove them all, so they won't appear in the post body any more
+            for quote_note in content_node.find_all('blockquote'):
+                content = content + '-----\n' + quote_note.text + '\n-----\n'
+                quote_note.decompose()
 
-                # Show all quotes and then remove them all
-                # So they won't appear in the post body any more
-                quote_nodes = content_node.select('blockquote')
-                if len(quote_nodes) > 0:
-                    for quote_node in quote_nodes:
-                        content = '-----\n' + quote_node.text + '\n-----\n'
-                        quote_node.decompose()
+            # Do not include emotion icons (which doesn't start with 'http')
+            img_src[post_num] = [x.attrs['file'] for x in single_child_post.find_all('img', file=re.compile('http.+'))]
+            if not img_src[post_num]:
+                del (img_src[post_num])
 
-                # Do not include emotion icons (which doesn't start with 'http')
-                img_nodes = content_node.select('img')
-                if len(img_nodes) > 0:
-                    img_src[post_num] = [img_node.attrs['file'] + '\n' for img_node in img_nodes if
-                                         'file' in img_node.attrs and img_node.attrs['file'].startswith('http')]
-                    if len(img_src[post_num]) == 0:
-                        del (img_src[post_num])
+            # Do not include link as signature for the mobile app
+            a_href[post_num] = [x.attrs['href'] for x in single_child_post.find_all('a', href=re.compile('http.+')) if x.attrs['href'] not in skipped_urls]
+            if not a_href[post_num]:
+                del (a_href[post_num])
 
-                # Do not include link as signature for the mobile app
-                a_nodes = content_node.select('a')
-                if len(a_nodes) > 0:
-                    a_href[post_num] = [a_node.attrs['href'] + '\n' for a_node in a_nodes if
-                                        a_node.attrs['href'].startswith('http') and not a_node.attrs[
-                                                                                            'href'] in skipped_urls]
-                    if len(a_href[post_num]) == 0:
-                        del (a_href[post_num])
+            content = content + content_node.text.strip()
+            all_posts[post_num] = post_title + content + '\n'
 
-                content = content + content_node.text.strip()
-
-                all_posts[post_num] = post_title + content + '\n'
-
-        # If anything is wrong, just discard this post
-        # I don't want to spend too much time on this
+        # If anything is wrong, just discard this post - I don't want to spend too much time on this
         except Exception:
             pass
 
     return all_posts, img_src, a_href
 
 
-def download_page(url, method, data=None, download_proxy=None):
+def download_single_page(url, method, data=None, download_proxy=None):
     if method == 'get':
-        if data is not None:
-            r = s.get(url, headers=default_header, data=data, proxies=download_proxy)
-        else:
-            r = s.get(url, headers=default_header, proxies=download_proxy)
+        r = s.get(url, headers=default_header, data=data, proxies=download_proxy)
     if method == 'post':
-        if data is not None:
-            r = s.post(url, headers=default_header, data=data, proxies=download_proxy)
-        else:
-            r = s.post(url, headers=default_header, proxies=download_proxy)
-
+        r = s.post(url, headers=default_header, data=data, proxies=download_proxy)
     return BeautifulSoup(r.content, 'html.parser', from_encoding='utf-8')
 
 
@@ -299,13 +231,10 @@ if __name__ == '__main__':
 
     parser.add_argument('-s', '--start-page', dest='start_page', help='the page number to start with', type=int)
     parser.add_argument('-e', '--end-page', dest='end_page', help='the page number to end with', type=int)
-    parser.add_argument('-d', '--download-image', dest='download_image', help='download images', default=False,
-                        action='store_true')
+    parser.add_argument('-d', '--download-image', dest='download_image', help='download images', default=False, action='store_true')
 
     group = parser.add_mutually_exclusive_group()
-    group.add_argument('-o', '--only-for-image', dest='only_for_image', help='only take proxy for downloading images',
-                       default=False, action='store_true')
-    group.add_argument('-f', '--only-for-failed-image', dest='only_for_failed_image',
-                       help='only take proxy for failed downloading images',
-                       default=False, action='store_true')
+    group.add_argument('-o', '--only-for-image', dest='only_for_image', help='only take proxy for downloading images', default=False, action='store_true')
+    group.add_argument('-f', '--only-for-failed-image', dest='only_for_failed_image', help='only take proxy for failed downloading images', default=False,
+                       action='store_true')
     main(parser.parse_args())

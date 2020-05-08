@@ -17,6 +17,8 @@ default_header = {'Host': 'bbs.saraba1st.com',
 skipped_urls = ['http://www.coolapk.com/apk/me.ykrank.s1next',
                 'https://itunes.apple.com/cn/app/saralin/id1086444812',
                 'https://github.com/ykrank/S1-Next/releases',
+                'https://itunes.apple.com/fi/app/saraba1st/id1221237470?mt=8',
+                'https://www.coolapk.com/apk/140634'
                 'http://126.am/S1Nyan'
                 'http://stage1.5j4m.com/?1.17',
                 'http://stage1.5j4m.com/?1.19',
@@ -85,7 +87,7 @@ def main(args):
 
     if args.download_image:
         failed_images = download_images(args.thread, img_src, img_proxy, args.only_for_failed_image)
-        if (len(failed_images) > 0):
+        if len(failed_images) > 0:
             write_to_file('thread_{}_img_failed_{}_{}.txt'.format(args.thread, start_page, end_page), failed_images, first_page.title.text, True)
 
 
